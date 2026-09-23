@@ -4,9 +4,9 @@ spring:
   lifecycle:
     timeout-per-shutdown-phase: 20s
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/retoaws}
-    username: ${DB_USERNAME:retoaws_app}
-    password: ${DB_PASSWORD:retoaws_local}
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
     hikari:
       maximum-pool-size: ${DB_POOL_SIZE:10}
   jpa:
@@ -15,11 +15,11 @@ spring:
       ddl-auto: validate
     properties:
       hibernate:
-        default_schema: retoaws
+        default_schema: ${DB_SCHEMA}
   flyway:
     enabled: true
-    default-schema: retoaws
-    schemas: retoaws
+    default-schema: ${DB_SCHEMA}
+    schemas: ${DB_SCHEMA}
     create-schemas: false
 server:
   port: ${SERVER_PORT:8080}
