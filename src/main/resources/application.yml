@@ -1,6 +1,8 @@
 spring:
   application:
     name: ms-reto-aws
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/retoaws}
     username: ${DB_USERNAME:retoaws_app}
@@ -21,5 +23,14 @@ spring:
     create-schemas: false
 server:
   port: ${SERVER_PORT:8080}
+  shutdown: graceful
   servlet:
     context-path: ${API_CONTEXT_PATH:/api/v1}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
