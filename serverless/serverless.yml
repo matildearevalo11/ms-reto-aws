@@ -9,6 +9,9 @@ provider:
   architecture: arm64
   memorySize: 256
   timeout: 10
+  environment:
+    USERS_TABLE:
+      Ref: UsersTable
   logs:
     httpApi: true
   httpApi:
@@ -25,6 +28,8 @@ functions:
     runtime: java21
     architecture: arm64
     handler: com.retoaws.users.GetUsersHandler
+    role:
+      Fn::GetAtt: [GetUsersLambdaRole, Arn]
     package:
       artifact: java/target/users-java.jar
     events:
@@ -37,6 +42,8 @@ functions:
     runtime: java21
     architecture: arm64
     handler: com.retoaws.users.CreateUserHandler
+    role:
+      Fn::GetAtt: [CreateUserLambdaRole, Arn]
     package:
       artifact: java/target/users-java.jar
     events:
@@ -47,6 +54,8 @@ functions:
   updateUser:
     name: ${self:service}-${sls:stage}-update-user-node
     handler: node/handler.updateUser
+    role:
+      Fn::GetAtt: [UpdateUserLambdaRole, Arn]
     package:
       patterns:
         - node/**
@@ -58,6 +67,8 @@ functions:
   deleteUser:
     name: ${self:service}-${sls:stage}-delete-user-node
     handler: node/handler.deleteUser
+    role:
+      Fn::GetAtt: [DeleteUserLambdaRole, Arn]
     package:
       patterns:
         - node/**
@@ -67,7 +78,123 @@ functions:
           path: /users/{id}
 
 resources:
-  Description: Four in-memory user endpoints implemented by two Java and two Node.js Lambdas.
+  Description: Four user endpoints backed by a private DynamoDB table.
+  Resources:
+    UsersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        SSESpecification:
+          SSEEnabled: true
+        ResourcePolicy:
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: DenyDataAccessOutsideUserLambdas
+                Effect: Deny
+                Principal: "*"
+                Action:
+                  - dynamodb:BatchGetItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:ConditionCheckItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:GetItem
+                  - dynamodb:PartiQLDelete
+                  - dynamodb:PartiQLInsert
+                  - dynamodb:PartiQLSelect
+                  - dynamodb:PartiQLUpdate
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:UpdateItem
+                Resource:
+                  Fn::Sub: arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${self:service}-${sls:stage}
+                Condition:
+                  ArnNotLike:
+                    aws:PrincipalArn:
+                      - Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${self:service}-${sls:stage}-GetUsersLambdaRole-*
+                      - Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${self:service}-${sls:stage}-CreateUserLambdaRole-*
+                      - Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${self:service}-${sls:stage}-UpdateUserLambdaRole-*
+                      - Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${self:service}-${sls:stage}-DeleteUserLambdaRole-*
+
+    GetUsersLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument: &lambdaTrustPolicy
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: ReadUsersAndWriteLogs
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - &lambdaLogs
+                  Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: "*"
+                - Effect: Allow
+                  Action: dynamodb:Scan
+                  Resource:
+                    Fn::GetAtt: [UsersTable, Arn]
+
+    CreateUserLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument: *lambdaTrustPolicy
+        Policies:
+          - PolicyName: CreateUsersAndWriteLogs
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - *lambdaLogs
+                - Effect: Allow
+                  Action: dynamodb:PutItem
+                  Resource:
+                    Fn::GetAtt: [UsersTable, Arn]
+
+    UpdateUserLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument: *lambdaTrustPolicy
+        Policies:
+          - PolicyName: UpdateUsersAndWriteLogs
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - *lambdaLogs
+                - Effect: Allow
+                  Action: dynamodb:UpdateItem
+                  Resource:
+                    Fn::GetAtt: [UsersTable, Arn]
+
+    DeleteUserLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument: *lambdaTrustPolicy
+        Policies:
+          - PolicyName: DeleteUsersAndWriteLogs
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - *lambdaLogs
+                - Effect: Allow
+                  Action: dynamodb:DeleteItem
+                  Resource:
+                    Fn::GetAtt: [UsersTable, Arn]
   Outputs:
     UsersApiUrl:
       Description: Base URL of the shared HTTP API
@@ -75,3 +202,7 @@ resources:
         Fn::GetAtt:
           - HttpApi
           - ApiEndpoint
+    UsersTableName:
+      Description: Private DynamoDB table used by the four Lambda functions
+      Value:
+        Ref: UsersTable

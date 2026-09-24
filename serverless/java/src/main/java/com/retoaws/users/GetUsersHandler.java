@@ -10,8 +10,18 @@ import java.util.Map;
 public final class GetUsersHandler implements
         RequestHandler<APIGatewayV2HTTPEvent, APIGatewayV2HTTPResponse> {
 
+    private final UserRepository repository;
+
+    public GetUsersHandler() {
+        this(new DynamoDbUserRepository());
+    }
+
+    GetUsersHandler(UserRepository repository) {
+        this.repository = repository;
+    }
+
     @Override
     public APIGatewayV2HTTPResponse handleRequest(APIGatewayV2HTTPEvent event, Context context) {
-        return Responses.json(200, Map.of("users", InMemoryUsers.all()));
+        return Responses.json(200, Map.of("users", repository.findAll()));
     }
 }
