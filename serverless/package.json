@@ -1,0 +1,21 @@
+{
+  "name": "ms-reto-aws-users-serverless",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Four AWS Lambda user endpoints deployed through Serverless Framework",
+  "scripts": {
+    "build:java": "cd java && /opt/homebrew/bin/mise exec java@21 -- ./mvnw clean package",
+    "test:java": "cd java && /opt/homebrew/bin/mise exec java@21 -- ./mvnw test",
+    "test:node": "node --test node/handler.test.js",
+    "test": "npm run test:java && npm run test:node",
+    "package": "npm run build:java && serverless package",
+    "deploy": "npm run build:java && serverless deploy",
+    "remove": "serverless remove"
+  },
+  "devDependencies": {
+    "serverless": "4.42.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

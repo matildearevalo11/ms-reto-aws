@@ -1,0 +1,77 @@
+service: ms-reto-aws-users
+frameworkVersion: "4"
+
+provider:
+  name: aws
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  runtime: nodejs22.x
+  architecture: arm64
+  memorySize: 256
+  timeout: 10
+  logs:
+    httpApi: true
+  httpApi:
+    cors: true
+
+package:
+  individually: true
+  patterns:
+    - "!**"
+
+functions:
+  getUsers:
+    name: ${self:service}-${sls:stage}-get-users-java
+    runtime: java21
+    architecture: arm64
+    handler: com.retoaws.users.GetUsersHandler
+    package:
+      artifact: java/target/users-java.jar
+    events:
+      - httpApi:
+          method: GET
+          path: /users
+
+  createUser:
+    name: ${self:service}-${sls:stage}-create-user-java
+    runtime: java21
+    architecture: arm64
+    handler: com.retoaws.users.CreateUserHandler
+    package:
+      artifact: java/target/users-java.jar
+    events:
+      - httpApi:
+          method: POST
+          path: /users
+
+  updateUser:
+    name: ${self:service}-${sls:stage}-update-user-node
+    handler: node/handler.updateUser
+    package:
+      patterns:
+        - node/**
+    events:
+      - httpApi:
+          method: PUT
+          path: /users/{id}
+
+  deleteUser:
+    name: ${self:service}-${sls:stage}-delete-user-node
+    handler: node/handler.deleteUser
+    package:
+      patterns:
+        - node/**
+    events:
+      - httpApi:
+          method: DELETE
+          path: /users/{id}
+
+resources:
+  Description: Four in-memory user endpoints implemented by two Java and two Node.js Lambdas.
+  Outputs:
+    UsersApiUrl:
+      Description: Base URL of the shared HTTP API
+      Value:
+        Fn::GetAtt:
+          - HttpApi
+          - ApiEndpoint
