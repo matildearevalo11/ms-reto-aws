@@ -11,6 +11,7 @@ import java.util.List;
 class UserHandlersTest {
 
     private final FakeUserRepository repository = new FakeUserRepository();
+    private final FakeUserEventPublisher eventPublisher = new FakeUserEventPublisher();
 
     @Test
     void getReturnsHardcodedUsers() {
@@ -28,11 +29,12 @@ class UserHandlersTest {
                 {"id":"1020304050","name":"Camila Restrepo","email":"camila.restrepo@example.com"}
                 """);
 
-        var response = new CreateUserHandler(repository).handleRequest(event, null);
+        var response = new CreateUserHandler(repository, eventPublisher).handleRequest(event, null);
 
         assertEquals(201, response.getStatusCode());
         assertTrue(response.getBody().contains("Camila Restrepo"));
         assertEquals(1, repository.users.size());
+        assertEquals(1, eventPublisher.users.size());
     }
 
     @Test
@@ -42,7 +44,8 @@ class UserHandlersTest {
                 {"id":"1020304050","name":"Camila Restrepo","email":"invalid"}
                 """);
 
-        assertEquals(400, new CreateUserHandler(repository).handleRequest(event, null).getStatusCode());
+        assertEquals(400, new CreateUserHandler(repository, eventPublisher).handleRequest(event, null).getStatusCode());
+        assertTrue(eventPublisher.users.isEmpty());
     }
 
     private static final class FakeUserRepository implements UserRepository {
@@ -55,6 +58,15 @@ class UserHandlersTest {
 
         @Override
         public void create(User user) {
+            users.add(user);
+        }
+    }
+
+    private static final class FakeUserEventPublisher implements UserEventPublisher {
+        private final List<User> users = new ArrayList<>();
+
+        @Override
+        public void publishCreated(User user) {
             users.add(user);
         }
     }

@@ -11,13 +11,15 @@ public final class CreateUserHandler implements
         RequestHandler<APIGatewayV2HTTPEvent, APIGatewayV2HTTPResponse> {
 
     private final UserRepository repository;
+    private final UserEventPublisher eventPublisher;
 
     public CreateUserHandler() {
-        this(new DynamoDbUserRepository());
+        this(new DynamoDbUserRepository(), new SqsUserEventPublisher());
     }
 
-    CreateUserHandler(UserRepository repository) {
+    CreateUserHandler(UserRepository repository, UserEventPublisher eventPublisher) {
         this.repository = repository;
+        this.eventPublisher = eventPublisher;
     }
 
     @Override
@@ -33,6 +35,7 @@ public final class CreateUserHandler implements
                 return Responses.error(400, validationError);
             }
             repository.create(user);
+            eventPublisher.publishCreated(user);
             return Responses.json(201, user);
         } catch (ConditionalCheckFailedException exception) {
             return Responses.error(409, "User already exists");

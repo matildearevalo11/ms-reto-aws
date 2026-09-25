@@ -41,15 +41,42 @@ functions:
     name: ${self:service}-${sls:stage}-create-user-java
     runtime: java21
     architecture: arm64
+    memorySize: 512
+    timeout: 30
     handler: com.retoaws.users.CreateUserHandler
     role:
       Fn::GetAtt: [CreateUserLambdaRole, Arn]
+    environment:
+      USERS_TABLE:
+        Ref: UsersTable
+      USER_CREATED_QUEUE_URL:
+        Ref: UserCreatedQueue
     package:
       artifact: java/target/users-java.jar
     events:
       - httpApi:
           method: POST
           path: /users
+
+  sendEmails:
+    name: ${self:service}-${sls:stage}-send-emails-node
+    handler: node/email-handler.sendEmails
+    role:
+      Fn::GetAtt: [SendEmailsLambdaRole, Arn]
+    environment:
+      USER_NOTIFICATIONS_TOPIC_ARN:
+        Ref: UserNotificationsTopic
+    package:
+      patterns:
+        - node/**
+        - "!node/**/*.test.js"
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt: [UserCreatedQueue, Arn]
+          batchSize: 10
+          maximumBatchingWindow: 5
+          functionResponseType: ReportBatchItemFailures
 
   updateUser:
     name: ${self:service}-${sls:stage}-update-user-node
@@ -78,7 +105,13 @@ functions:
           path: /users/{id}
 
 resources:
-  Description: Four user endpoints backed by a private DynamoDB table.
+  Description: User APIs with private persistence and queued email notifications.
+  Conditions:
+    HasNotificationEmail:
+      Fn::Not:
+        - Fn::Equals:
+            - ${param:notificationEmail, ''}
+            - ""
   Resources:
     UsersTable:
       Type: AWS::DynamoDB::Table
@@ -165,6 +198,10 @@ resources:
                   Action: dynamodb:PutItem
                   Resource:
                     Fn::GetAtt: [UsersTable, Arn]
+                - Effect: Allow
+                  Action: sqs:SendMessage
+                  Resource:
+                    Fn::GetAtt: [UserCreatedQueue, Arn]
 
     UpdateUserLambdaRole:
       Type: AWS::IAM::Role
@@ -195,6 +232,107 @@ resources:
                   Action: dynamodb:DeleteItem
                   Resource:
                     Fn::GetAtt: [UsersTable, Arn]
+
+    SendEmailsLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument: *lambdaTrustPolicy
+        Policies:
+          - PolicyName: ConsumeUserEventsPublishNotificationsAndWriteLogs
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - *lambdaLogs
+                - Effect: Allow
+                  Action:
+                    - sqs:ChangeMessageVisibility
+                    - sqs:DeleteMessage
+                    - sqs:GetQueueAttributes
+                    - sqs:ReceiveMessage
+                  Resource:
+                    Fn::GetAtt: [UserCreatedQueue, Arn]
+                - Effect: Allow
+                  Action: sns:Publish
+                  Resource:
+                    Ref: UserNotificationsTopic
+
+    UserCreatedDeadLetterQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-${sls:stage}-user-created-dlq
+        KmsMasterKeyId: alias/aws/sqs
+        MessageRetentionPeriod: 1209600
+
+    UserCreatedQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-${sls:stage}-user-created
+        KmsMasterKeyId: alias/aws/sqs
+        MessageRetentionPeriod: 345600
+        VisibilityTimeout: 60
+        RedrivePolicy:
+          deadLetterTargetArn:
+            Fn::GetAtt: [UserCreatedDeadLetterQueue, Arn]
+          maxReceiveCount: 3
+
+    UserCreatedQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - Ref: UserCreatedQueue
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: DenyQueueAccessOutsideMessagingLambdas
+              Effect: Deny
+              Principal: "*"
+              Action:
+                - sqs:ChangeMessageVisibility
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+                - sqs:GetQueueUrl
+                - sqs:ReceiveMessage
+                - sqs:SendMessage
+              Resource:
+                Fn::GetAtt: [UserCreatedQueue, Arn]
+              Condition:
+                ArnNotEquals:
+                  aws:PrincipalArn:
+                    - Fn::GetAtt: [CreateUserLambdaRole, Arn]
+                    - Fn::GetAtt: [SendEmailsLambdaRole, Arn]
+
+    UserNotificationsTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: ${self:service}-${sls:stage}-user-notifications
+
+    UserNotificationsTopicPolicy:
+      Type: AWS::SNS::TopicPolicy
+      Properties:
+        Topics:
+          - Ref: UserNotificationsTopic
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: DenyPublishOutsideSendEmailsLambda
+              Effect: Deny
+              Principal: "*"
+              Action: sns:Publish
+              Resource:
+                Ref: UserNotificationsTopic
+              Condition:
+                ArnNotEquals:
+                  aws:PrincipalArn:
+                    Fn::GetAtt: [SendEmailsLambdaRole, Arn]
+
+    UserNotificationsEmailSubscription:
+      Type: AWS::SNS::Subscription
+      Condition: HasNotificationEmail
+      Properties:
+        Protocol: email
+        Endpoint: ${param:notificationEmail, ''}
+        TopicArn:
+          Ref: UserNotificationsTopic
   Outputs:
     UsersApiUrl:
       Description: Base URL of the shared HTTP API
@@ -206,3 +344,15 @@ resources:
       Description: Private DynamoDB table used by the four Lambda functions
       Value:
         Ref: UsersTable
+    UserCreatedQueueUrl:
+      Description: Queue receiving user-created events
+      Value:
+        Ref: UserCreatedQueue
+    UserCreatedDeadLetterQueueUrl:
+      Description: Dead-letter queue for failed user-created events
+      Value:
+        Ref: UserCreatedDeadLetterQueue
+    UserNotificationsTopicArn:
+      Description: SNS topic used exclusively by the email Lambda
+      Value:
+        Ref: UserNotificationsTopic
