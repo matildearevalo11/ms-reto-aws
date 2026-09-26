@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ms-reto-aws-config
+  namespace: ms-reto-aws
+data:
+  DB_URL: jdbc:postgresql://postgres:5432/retoaws
+  DB_SCHEMA: retoaws
+  DB_POOL_SIZE: "5"
+  SERVER_PORT: "8080"
+  API_CONTEXT_PATH: /api/v1
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: ms-reto-aws
+data:
+  01-init.sql: |
+    CREATE SCHEMA IF NOT EXISTS retoaws AUTHORIZATION retoaws_app;
+    GRANT ALL PRIVILEGES ON SCHEMA retoaws TO retoaws_app;

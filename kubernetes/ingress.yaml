@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ms-reto-aws
+  namespace: ms-reto-aws
+  labels:
+    app.kubernetes.io/name: ms-reto-aws
+    app.kubernetes.io/part-of: ms-reto-aws
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ms-reto-aws.local
+      http:
+        paths:
+          - path: /api/v1
+            pathType: Prefix
+            backend:
+              service:
+                name: ms-reto-aws
+                port:
+                  name: http

@@ -14,15 +14,15 @@ RUN mvn --batch-mode --no-transfer-progress --define skipTests package \
 
 FROM eclipse-temurin:25-jre-alpine-3.21 AS runtime
 
-RUN addgroup --system spring \
-    && adduser --system --ingroup spring spring
+RUN addgroup --system --gid 10001 spring \
+    && adduser --system --uid 10001 --ingroup spring spring
 
 WORKDIR /app
 
 COPY --from=build --chown=spring:spring /workspace/application.jar ./application.jar
 COPY --from=build --chown=spring:spring /workspace/global-bundle.pem ./certs/global-bundle.pem
 
-USER spring:spring
+USER 10001:10001
 
 EXPOSE 8080
 
