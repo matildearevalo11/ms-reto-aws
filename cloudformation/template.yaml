@@ -1,0 +1,527 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Native CloudFormation stack for the HU-07, HU-08 and HU-09 user API.
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    AllowedPattern: "[a-z0-9-]+"
+  ArtifactBucket:
+    Type: String
+  JavaArtifactKey:
+    Type: String
+  NodeArtifactKey:
+    Type: String
+  NotificationEmail:
+    Type: String
+    Default: ""
+
+Conditions:
+  HasNotificationEmail: !Not [!Equals [!Ref NotificationEmail, ""]]
+
+Resources:
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ms-reto-aws-users-${Stage}-cfn
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      ResourcePolicy:
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: DenyDataAccessOutsideUserLambdas
+              Effect: Deny
+              Principal: "*"
+              Action:
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+                - dynamodb:DeleteItem
+                - dynamodb:GetItem
+                - dynamodb:PartiQLDelete
+                - dynamodb:PartiQLInsert
+                - dynamodb:PartiQLSelect
+                - dynamodb:PartiQLUpdate
+                - dynamodb:PutItem
+                - dynamodb:Query
+                - dynamodb:Scan
+                - dynamodb:UpdateItem
+              Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/ms-reto-aws-users-${Stage}-cfn
+              Condition:
+                ArnNotEquals:
+                  aws:PrincipalArn:
+                    - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/ms-reto-aws-users-${Stage}-cfn-get-users
+                    - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/ms-reto-aws-users-${Stage}-cfn-create-user
+                    - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/ms-reto-aws-users-${Stage}-cfn-update-user
+                    - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/ms-reto-aws-users-${Stage}-cfn-delete-user
+
+  UserCreatedDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ms-reto-aws-users-${Stage}-cfn-user-created-dlq
+      KmsMasterKeyId: alias/aws/sqs
+      MessageRetentionPeriod: 1209600
+
+  UserCreatedQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ms-reto-aws-users-${Stage}-cfn-user-created
+      KmsMasterKeyId: alias/aws/sqs
+      MessageRetentionPeriod: 345600
+      VisibilityTimeout: 60
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt UserCreatedDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  UserNotificationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ms-reto-aws-users-${Stage}-cfn-notifications
+
+  UserNotificationsEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasNotificationEmail
+    Properties:
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+      TopicArn: !Ref UserNotificationsTopic
+
+  GetUsersRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ms-reto-aws-users-${Stage}-cfn-get-users
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ReadUsers
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:Scan
+                Resource: !GetAtt UsersTable.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/ms-reto-aws-users-${Stage}-cfn-*:*
+
+  CreateUserRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ms-reto-aws-users-${Stage}-cfn-create-user
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CreateUsersAndPublishEvents
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt UsersTable.Arn
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt UserCreatedQueue.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/ms-reto-aws-users-${Stage}-cfn-*:*
+
+  UpdateUserRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ms-reto-aws-users-${Stage}-cfn-update-user
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: UpdateUsers
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:UpdateItem
+                Resource: !GetAtt UsersTable.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/ms-reto-aws-users-${Stage}-cfn-*:*
+
+  DeleteUserRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ms-reto-aws-users-${Stage}-cfn-delete-user
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DeleteUsers
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:DeleteItem
+                Resource: !GetAtt UsersTable.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/ms-reto-aws-users-${Stage}-cfn-*:*
+
+  SendEmailsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ms-reto-aws-users-${Stage}-cfn-send-emails
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ConsumeEventsAndPublishNotifications
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ChangeMessageVisibility
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ReceiveMessage
+                Resource: !GetAtt UserCreatedQueue.Arn
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref UserNotificationsTopic
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/ms-reto-aws-users-${Stage}-cfn-*:*
+
+  UserCreatedQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref UserCreatedQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyQueueAccessOutsideMessagingLambdas
+            Effect: Deny
+            Principal: "*"
+            Action:
+              - sqs:ChangeMessageVisibility
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+              - sqs:GetQueueUrl
+              - sqs:ReceiveMessage
+              - sqs:SendMessage
+            Resource: !GetAtt UserCreatedQueue.Arn
+            Condition:
+              ArnNotEquals:
+                aws:PrincipalArn:
+                  - !GetAtt CreateUserRole.Arn
+                  - !GetAtt SendEmailsRole.Arn
+
+  UserNotificationsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref UserNotificationsTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyPublishOutsideEmailLambda
+            Effect: Deny
+            Principal: "*"
+            Action: sns:Publish
+            Resource: !Ref UserNotificationsTopic
+            Condition:
+              ArnNotEquals:
+                aws:PrincipalArn: !GetAtt SendEmailsRole.Arn
+
+  GetUsersFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ms-reto-aws-users-${Stage}-cfn-get-users-java
+      Architectures: [arm64]
+      Runtime: java21
+      Handler: com.retoaws.users.GetUsersHandler
+      MemorySize: 256
+      Timeout: 10
+      Role: !GetAtt GetUsersRole.Arn
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UsersTable
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref JavaArtifactKey
+
+  CreateUserFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ms-reto-aws-users-${Stage}-cfn-create-user-java
+      Architectures: [arm64]
+      Runtime: java21
+      Handler: com.retoaws.users.CreateUserHandler
+      MemorySize: 512
+      Timeout: 30
+      Role: !GetAtt CreateUserRole.Arn
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UsersTable
+          USER_CREATED_QUEUE_URL: !Ref UserCreatedQueue
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref JavaArtifactKey
+
+  UpdateUserFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ms-reto-aws-users-${Stage}-cfn-update-user-node
+      Architectures: [arm64]
+      Runtime: nodejs22.x
+      Handler: handler.updateUser
+      MemorySize: 256
+      Timeout: 10
+      Role: !GetAtt UpdateUserRole.Arn
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UsersTable
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref NodeArtifactKey
+
+  DeleteUserFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ms-reto-aws-users-${Stage}-cfn-delete-user-node
+      Architectures: [arm64]
+      Runtime: nodejs22.x
+      Handler: handler.deleteUser
+      MemorySize: 256
+      Timeout: 10
+      Role: !GetAtt DeleteUserRole.Arn
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UsersTable
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref NodeArtifactKey
+
+  SendEmailsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ms-reto-aws-users-${Stage}-cfn-send-emails-node
+      Architectures: [arm64]
+      Runtime: nodejs22.x
+      Handler: email-handler.sendEmails
+      MemorySize: 256
+      Timeout: 30
+      Role: !GetAtt SendEmailsRole.Arn
+      Environment:
+        Variables:
+          USER_NOTIFICATIONS_TOPIC_ARN: !Ref UserNotificationsTopic
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref NodeArtifactKey
+
+  UserCreatedEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt UserCreatedQueue.Arn
+      FunctionName: !Ref SendEmailsFunction
+      BatchSize: 10
+      MaximumBatchingWindowInSeconds: 5
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+      Enabled: true
+
+  UsersHttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub ms-reto-aws-users-${Stage}-cfn
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowHeaders: [content-type]
+        AllowMethods: [GET, POST, PUT, DELETE, OPTIONS]
+        AllowOrigins: ["*"]
+
+  GetUsersIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref UsersHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt GetUsersFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  CreateUserIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref UsersHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt CreateUserFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  UpdateUserIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref UsersHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt UpdateUserFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  DeleteUserIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref UsersHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt DeleteUserFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  GetUsersRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UsersHttpApi
+      RouteKey: GET /users
+      Target: !Sub integrations/${GetUsersIntegration}
+
+  CreateUserRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UsersHttpApi
+      RouteKey: POST /users
+      Target: !Sub integrations/${CreateUserIntegration}
+
+  UpdateUserRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UsersHttpApi
+      RouteKey: PUT /users/{id}
+      Target: !Sub integrations/${UpdateUserIntegration}
+
+  DeleteUserRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UsersHttpApi
+      RouteKey: DELETE /users/{id}
+      Target: !Sub integrations/${DeleteUserIntegration}
+
+  UsersApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref UsersHttpApi
+      StageName: $default
+      AutoDeploy: true
+      DefaultRouteSettings:
+        DetailedMetricsEnabled: true
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 25
+
+  GetUsersPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref GetUsersFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${UsersHttpApi}/*/GET/users
+
+  CreateUserPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref CreateUserFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${UsersHttpApi}/*/POST/users
+
+  UpdateUserPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref UpdateUserFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${UsersHttpApi}/*/PUT/users/*
+
+  DeleteUserPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DeleteUserFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${UsersHttpApi}/*/DELETE/users/*
+
+  GetUsersLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/ms-reto-aws-users-${Stage}-cfn-get-users-java
+      RetentionInDays: 14
+
+  CreateUserLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/ms-reto-aws-users-${Stage}-cfn-create-user-java
+      RetentionInDays: 14
+
+  UpdateUserLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/ms-reto-aws-users-${Stage}-cfn-update-user-node
+      RetentionInDays: 14
+
+  DeleteUserLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/ms-reto-aws-users-${Stage}-cfn-delete-user-node
+      RetentionInDays: 14
+
+  SendEmailsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/ms-reto-aws-users-${Stage}-cfn-send-emails-node
+      RetentionInDays: 14
+
+Outputs:
+  UsersApiUrl:
+    Description: Base URL for the four user endpoints.
+    Value: !GetAtt UsersHttpApi.ApiEndpoint
+  UsersTableName:
+    Value: !Ref UsersTable
+  UserCreatedQueueUrl:
+    Value: !Ref UserCreatedQueue
+  UserCreatedDeadLetterQueueUrl:
+    Value: !Ref UserCreatedDeadLetterQueue
+  UserNotificationsTopicArn:
+    Value: !Ref UserNotificationsTopic
