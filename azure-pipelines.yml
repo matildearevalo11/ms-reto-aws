@@ -1,0 +1,29 @@
+trigger:
+  branches:
+    include:
+      - main
+      - HU-10
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: self
+    displayName: Checkout source code
+
+  - task: Docker@2
+    displayName: Build application Docker image
+    inputs:
+      command: build
+      repository: ms-reto-aws
+      Dockerfile: Dockerfile
+      tags: |
+        $(Build.BuildId)
+
+  - script: docker images ms-reto-aws
+    displayName: Verify generated Docker image
